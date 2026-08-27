@@ -1,0 +1,38 @@
+const $=id=>document.getElementById(id)
+let scene=null,camera=null,raycaster=null,xrRunning=false,xrModulesAdded=false
+let displays=[],selected=null,showSize=true,defaultBezel=true,drag=null
+const ratioValue=r=>r==="16:9"?16/9:r==="3:4"?3/4:r==="3:2"?3/2:null
+function sizeFromInch(diagonal,ratio){const r=ratioValue(ratio)||16/9,d=diagonal*25.4,w=d*r/Math.sqrt(r*r+1);return{width:w,height:w/r}}
+function syncControls(){const inch=$("unit").value==="inch";$("mmWidthWrap").hidden=inch;$("mmHeightWrap").hidden=inch;$("inchWrap").hidden=!inch;$("customInchWrap").hidden=!inch||$("inchSize").value!=="custom"}
+function getSize(){if($("unit").value==="inch"){const d=$("inchSize").value==="custom"?+$("customInch").value:+$("inchSize").value;return sizeFromInch(d,$("ratio").value)}const w=+$("mmWidth").value||1200;const r=ratioValue($("ratio").value);const h=r?Math.round(w/r):+$("mmHeight").value||675;return{width:w,height:h}}
+function syncRatio(){const r=ratioValue($("ratio").value);if(r&&$("unit").value==="mm")$("mmHeight").value=Math.round((+$("mmWidth").value||1200)/r)}
+function showMessage(t){$("message").textContent=t;$("message").style.display="block";setTimeout(()=>$("message").style.display="none",2600)}
+function refresh(){ $("selected").textContent=selected?`Selected: #${selected.number}  ${Math.round(selected.wMm)} × ${Math.round(selected.hMm)} mm`:"Selected: none";$("delete").disabled=!selected;$("delete").textContent=selected?`DELETE #${selected.number}`:"DELETE #—"}
+function renumber(){displays.forEach((d,i)=>{d.number=i+1;d.object.userData.number=d.number})}
+function makeDisplay(wMm,hMm,pos,rotY=0,bezel=defaultBezel){
+ const g=new THREE.Group(),w=wMm/1000,h=hMm/1000,b=bezel?.005:0
+ g.position.copy(pos);g.rotation.y=rotY;g.userData.wMm=wMm;g.userData.hMm=hMm
+ const frame=new THREE.Mesh(new THREE.BoxGeometry(w,h,Math.max(b*2,.002)),new THREE.MeshBasicMaterial({color:bezel?0x111111:0x777777}))
+ frame.position.z=-.001
+ const screen=new THREE.Mesh(new THREE.PlaneGeometry(Math.max(w-b*2,.001),Math.max(h-b*2,.001)),new THREE.MeshBasicMaterial({color:0x777777,side:THREE.DoubleSide}))
+ screen.position.z=.003
+ g.add(frame,screen);scene.add(g)
+ const d={number:displays.length+1,wMm,hMm,bezel,object:g};displays.push(d);selected=d;renumber();refresh();return d
+}
+function place(){if(!xrRunning||!camera){showMessage("Start AR first.");return}const s=getSize(),f=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion).normalize();makeDisplay(s.width,s.height,camera.position.clone().add(f.multiplyScalar(2)));$("hint").style.display="none"}
+function updateSelected(){if(!selected)return;const s=getSize(),b=defaultBezel?.005:0,w=s.width/1000,h=s.height/1000;selected.wMm=s.width;selected.hMm=s.height;selected.bezel=defaultBezel;const f=selected.object.children[0],m=selected.object.children[1];f.geometry.dispose();f.geometry=new THREE.BoxGeometry(w,h,Math.max(b*2,.002));f.material.color.set(defaultBezel?0x111111:0x777777);m.geometry.dispose();m.geometry=new THREE.PlaneGeometry(Math.max(w-b*2,.001),Math.max(h-b*2,.001));refresh()}
+function del(){if(!selected)return;scene.remove(selected.object);displays=displays.filter(d=>d!==selected);selected=displays.at(-1)||null;renumber();refresh()}
+function save(){localStorage.setItem("ar-display-layout",JSON.stringify({version:3,displays:displays.map(d=>({number:d.number,wMm:d.wMm,hMm:d.hMm,bezel:d.bezel,position:d.object.position.toArray(),rotationY:d.object.rotation.y}))}));$("status").textContent="Saved locally"}
+function load(){try{const x=JSON.parse(localStorage.getItem("ar-display-layout"));if(!x)throw 0;displays.forEach(d=>scene.remove(d.object));displays=[];selected=null;(x.displays||[]).forEach(d=>makeDisplay(d.wMm,d.hMm,new THREE.Vector3(...d.position),d.rotationY||0,!!d.bezel));renumber();refresh();$("status").textContent="Loaded locally"}catch(e){showMessage("No valid saved layout.")}}
+async function shot(){if(!xrRunning||!window.XR8?.canvasScreenshot)return showMessage("Start AR first.");try{const data=await XR8.canvasScreenshot().takeScreenshot();const a=document.createElement("a");a.href="data:image/jpeg;base64,"+data;a.download=`ar-display-${Date.now()}.jpg`;a.click();$("status").textContent="Screenshot ready"}catch(e){console.error(e);showMessage("Screenshot failed.")}}
+function pointer(e){return new THREE.Vector2(e.clientX/innerWidth*2-1,-e.clientY/innerHeight*2+1)}
+function pick(e){raycaster.setFromCamera(pointer(e),camera);const hits=raycaster.intersectObjects(displays.flatMap(d=>d.object.children));return hits.length?displays.find(d=>d.object===hits[0].object.parent):null}
+function down(e){if(e.target.closest("#panel"))return;const d=pick(e);if(!d)return;selected=d;refresh();drag={id:e.pointerId,distance:camera.position.distanceTo(d.object.position)}}
+function move(e){if(!drag||drag.id!==e.pointerId||!selected)return;raycaster.setFromCamera(pointer(e),camera);const p=new THREE.Vector3();raycaster.ray.at(drag.distance,p);selected.object.position.copy(p);$("heightInfo").textContent=`Height above floor: ${Math.round((selected.object.position.y-selected.hMm/2000)*1000)} mm`}
+function up(e){if(drag?.id===e.pointerId)drag=null}
+function sceneModule(){return{name:"display-scene",onStart:()=>{const xr=XR8.Threejs.xrScene();scene=xr.scene;camera=xr.camera;raycaster=new THREE.Raycaster();scene.background=null;document.addEventListener("pointerdown",down,true);document.addEventListener("pointermove",move,true);document.addEventListener("pointerup",up,true)},onUpdate:({processCpuResult})=>{const r=processCpuResult?.reality;if(r?.trackingStatus)$("tracking").textContent=`Tracking: ${r.trackingStatus}`}}}
+function onXRLoaded(){window.removeEventListener("xrloaded",onXRLoaded);$("status").textContent="Engine ready";$("startAR").disabled=false}
+function startAR(){if(!window.XR8)return showMessage("AR engine is not loaded. Check internet connection and reload.");if(xrRunning)return;try{XR8.XrController.configure({disableWorldTracking:false,scale:"absolute"});XR8.addCameraPipelineModules([XR8.GlTextureRenderer.pipelineModule(),XR8.Threejs.pipelineModule(),XR8.XrController.pipelineModule(),XR8.canvasScreenshot().cameraPipelineModule(),sceneModule()]);xrModulesAdded=true;XR8.run({canvas:$("camerafeed"),allowedDevices:XR8.XrConfig.device().MOBILE,cameraConfig:{direction:XR8.XrConfig.camera().BACK},glContextConfig:{alpha:false,preserveDrawingBuffer:true}});xrRunning=true;$("status").textContent="Starting camera…";$("hint").textContent="Move slowly until Tracking: NORMAL."}catch(e){console.error(e);$("status").textContent="AR error";showMessage("AR startup error. Reload and try again.")}}
+$("startAR").disabled=true;$("startAR").onclick=startAR;$("add").onclick=place;$("delete").onclick=del;$("save").onclick=save;$("load").onclick=load;$("screenshot").onclick=shot;$("recenter").onclick=()=>window.XR8?.XrController?.recenter();$("sizeToggle").onclick=()=>{showSize=!showSize;$("sizeToggle").textContent=`SIZE: ${showSize?"ON":"OFF"}`};$("bezelToggle").onclick=()=>{defaultBezel=!defaultBezel;$("bezelToggle").textContent=`BEZEL: ${defaultBezel?"5 mm":"NONE"}`;updateSelected()};$("unit").onchange=()=>{syncControls();updateSelected()};$("inchSize").onchange=()=>{syncControls();updateSelected()};$("customInch").oninput=updateSelected;$("ratio").onchange=()=>{syncRatio();updateSelected()};$("mmWidth").oninput=()=>{syncRatio();updateSelected()};$("mmHeight").oninput=updateSelected;syncControls();
+if(window.XR8)onXRLoaded();else window.addEventListener("xrloaded",onXRLoaded);
+setTimeout(()=>{if(!window.XR8)$("status").textContent="Engine load failed — reload page"},6000)
