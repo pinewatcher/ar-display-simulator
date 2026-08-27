@@ -1,100 +1,158 @@
-const $=id=>document.getElementById(id);
-const camera=$("camera"), canvas=$("canvas"), ctx=canvas.getContext("2d");
-let stream=null, displays=[], selected=null, showSize=true, bezel=true, nextId=1;
-let scale=0.35; // CSS pixels per mm; adjusted for usability, not metrology.
-let arMode=false;
+const $=id=>document.getElementById(id)
+let scene,camera,renderer,raycaster
+let xrReady=false,xrRunning=false,showSize=true,defaultBezel=true
+let displays=[],selected=null,lastReality=null
 
-function resize(){canvas.width=innerWidth*devicePixelRatio;canvas.height=innerHeight*devicePixelRatio;canvas.style.width=innerWidth+"px";canvas.style.height=innerHeight+"px"}
-addEventListener("resize",resize); resize();
+const ratioValue=r=>r==="16:9"?16/9:r==="3:4"?3/4:r==="3:2"?3/2:null
+function sizeFromInch(diagonal,ratio){
+  const r=ratioValue(ratio)||16/9, d=diagonal*25.4
+  const width=d*r/Math.sqrt(r*r+1)
+  return {width,height:width/r}
+}
+function currentSize(){
+  if($("unit").value==="inch"){
+    const d=$("inchSize").value==="custom"?Number($("customInch").value):Number($("inchSize").value)
+    return sizeFromInch(d,$("ratio").value==="custom"?"16:9":$("ratio").value)
+  }
+  return {width:Number($("mmWidth").value)||1200,height:Number($("mmHeight").value)||675}
+}
+function syncControls(){
+  const inch=$("unit").value==="inch"
+  $("mmWidthWrap").hidden=inch;$("mmHeightWrap").hidden=inch
+  $("inchSizeWrap").hidden=!inch;$("customInchWrap").hidden=!inch||$("inchSize").value!=="custom"
+}
+function updateRatio(){const r=ratioValue($("ratio").value);if(r&&$("unit").value==="mm")$("mmHeight").value=Math.round(Number($("mmWidth").value)/r)}
+$("unit").onchange=()=>{syncControls();updateSelected()}
+$("inchSize").onchange=()=>{syncControls();updateSelected()}
+$("ratio").onchange=()=>{updateRatio();updateSelected()}
+$("mmWidth").oninput=()=>{updateRatio();updateSelected()}
+$("mmHeight").oninput=updateSelected
+$("customInch").oninput=updateSelected
 
-function ratioWH(r){
-  if(r==="16:9") return 16/9;
-  if(r==="3:4") return 3/4;
-  if(r==="3:2") return 3/2;
-  return null;
+function makeDisplay(wMm,hMm,pos,ry=0,rz=0,bezel=defaultBezel,number=displays.length+1){
+  const g=new THREE.Group()
+  g.userData.number=number;g.userData.wMm=wMm;g.userData.hMm=hMm
+  const w=wMm/1000,h=hMm/1000,b=bezel?.005:0
+  const frame=new THREE.Mesh(new THREE.BoxGeometry(w,h,Math.max(b*2,.002)),new THREE.MeshBasicMaterial({color:bezel?0x111111:0x777777}))
+  frame.position.z=-.001;g.add(frame)
+  const screen=new THREE.Mesh(new THREE.PlaneGeometry(Math.max(w-b*2,.001),Math.max(h-b*2,.001)),new THREE.MeshBasicMaterial({color:0x777777,side:THREE.DoubleSide}))
+  screen.position.z=bezel?.003:.001;g.add(screen)
+  g.position.copy(pos);g.rotation.set(0,ry,rz);scene.add(g)
+  const d={number,wMm,hMm,bezel,object:g};displays.push(d);selected=d;renumber();refreshUI();return d
 }
-$("ratio").onchange=()=>{
-  const r=ratioWH($("ratio").value);
-  $("heightWrap").style.display=r?"inline":"inline";
-  if(r) $("height").value=Math.round(Number($("width").value)/r);
-};
-$("width").oninput=()=>{
-  const r=ratioWH($("ratio").value);
-  if(r) $("height").value=Math.round(Number($("width").value)/r);
-};
-$("height").oninput=()=>{$("ratio").value="custom"};
-
-function createDisplay(x=innerWidth/2,y=innerHeight/2){
-  const w=Number($("width").value)||1200, h=Number($("height").value)||675;
-  const d={id:nextId++,x,y,w,h,rot:0,bezel};
-  displays.push(d); selected=d; render();
+function renumber(){displays.forEach((d,i)=>{d.number=i+1;d.object.userData.number=d.number})}
+function refreshUI(){
+  $("delete").disabled=!selected
+  $("selected").textContent=selected?`Selected: #${selected.number}  ${Math.round(selected.wMm)} × ${Math.round(selected.hMm)} mm`:"Selected: none"
 }
-function render(){
-  document.querySelectorAll(".display").forEach(e=>e.remove());
-  displays.forEach(d=>{
-    const el=document.createElement("div");
-    el.className="display"+(d.bezel?"":" nobezel")+(selected===d?" selected":"");
-    el.dataset.id=d.id;
-    el.style.width=(d.w*scale)+"px"; el.style.height=(d.h*scale)+"px";
-    el.style.left=(d.x-d.w*scale/2)+"px"; el.style.top=(d.y-d.h*scale/2)+"px";
-    el.style.transform=`rotate(${d.rot}deg)`;
-    if(showSize){
-      const label=document.createElement("div"); label.className="label";
-      label.textContent=`${Math.round(d.w)} Ã ${Math.round(d.h)} mm`;
-      el.appendChild(label);
-    }
-    el.addEventListener("pointerdown",startDrag);
-    $("app").appendChild(el);
-  });
-  $("selected").textContent=selected?`é¸æ: ${Math.round(selected.w)} Ã ${Math.round(selected.h)} mm`:"é¸æãªã";
-  $("floorHeight").textContent="åºé«ã: ARåºé¢æ¤åºæã«è¡¨ç¤º";
+function placeDisplay(){
+  if(!xrReady||!camera)return showMessage("Start AR first.")
+  const s=currentSize(),f=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion).normalize()
+  makeDisplay(s.width,s.height,camera.position.clone().add(f.multiplyScalar(2)))
+  $("hint").style.display="none"
 }
-function startDrag(e){
-  e.preventDefault(); e.stopPropagation();
-  const d=displays.find(x=>x.id===Number(e.currentTarget.dataset.id)); selected=d;
-  const sx=e.clientX, sy=e.clientY, ox=d.x, oy=d.y;
-  e.currentTarget.setPointerCapture(e.pointerId);
-  const move=ev=>{d.x=ox+(ev.clientX-sx);d.y=oy+(ev.clientY-sy);render()};
-  const up=()=>{e.currentTarget.removeEventListener("pointermove",move);e.currentTarget.removeEventListener("pointerup",up)};
-  e.currentTarget.addEventListener("pointermove",move);e.currentTarget.addEventListener("pointerup",up);
-  render();
+function deleteSelected(){
+  if(!selected)return
+  scene.remove(selected.object)
+  selected.object.traverse(o=>{o.geometry?.dispose();o.material?.dispose()})
+  displays=displays.filter(d=>d!==selected);selected=displays.at(-1)||null;renumber();refreshUI()
 }
-$("add").onclick=()=>createDisplay();
-$("sizeToggle").onclick=()=>{showSize=!showSize;$("sizeToggle").textContent=`ãµã¤ãºè¡¨ç¤º ${showSize?"ON":"OFF"}`;render()};
-$("bezelToggle").onclick=()=>{bezel=!bezel;$("bezelToggle").textContent=`ãã¼ã« ${bezel?"5mm":"ãªã"}`;if(selected){selected.bezel=bezel}render()};
-$("save").onclick=()=>{
-  localStorage.setItem("ar-display-layout",JSON.stringify({version:1,displays}));
-  $("status").textContent="éç½®ãã­ã¼ã«ã«ä¿å­";
-};
-$("load").onclick=()=>{
-  try{const x=JSON.parse(localStorage.getItem("ar-display-layout"));if(x?.displays){displays=x.displays;nextId=Math.max(0,...displays.map(d=>d.id))+1;selected=displays[0]||null;render();$("status").textContent="éç½®ãèª­è¾¼"}}
-  catch(e){alert("ä¿å­ãã¼ã¿ãèª­ã¿è¾¼ãã¾ãã")}
-};
-$("shot").onclick=async()=>{
-  // Capture the visible camera frame plus UI-independent display overlay.
-  const out=document.createElement("canvas"); out.width=innerWidth*2;out.height=innerHeight*2;
-  const o=out.getContext("2d");
-  if(camera.srcObject){o.drawImage(camera,0,0,out.width,out.height)}
-  else{o.fillStyle="#555";o.fillRect(0,0,out.width,out.height)}
-  o.scale(2,2);
-  displays.forEach(d=>{
-    o.save();o.translate(d.x,d.y);o.rotate(d.rot*Math.PI/180);
-    o.fillStyle="#777";o.fillRect(-d.w*scale/2,-d.h*scale/2,d.w*scale,d.h*scale);
-    if(d.bezel){o.strokeStyle="#111";o.lineWidth=10;o.strokeRect(-d.w*scale/2,-d.h*scale/2,d.w*scale,d.h*scale)}
-    if(showSize){o.fillStyle="#fff";o.font="12px sans-serif";o.fillText(`${Math.round(d.w)} Ã ${Math.round(d.h)} mm`,-d.w*scale/2,d.h*scale/2+18)}
-    o.restore();
-  });
-  const a=document.createElement("a");a.download=`ar-display-${Date.now()}.png`;a.href=out.toDataURL("image/png");a.click();
-};
-$("start").onclick=async()=>{
+function updateSelected(){
+  if(!selected)return
+  const s=currentSize(),b=defaultBezel?.005:0,w=s.width/1000,h=s.height/1000
+  selected.wMm=s.width;selected.hMm=s.height;selected.bezel=defaultBezel
+  const f=selected.object.children[0],m=selected.object.children[1]
+  f.geometry.dispose();f.geometry=new THREE.BoxGeometry(w,h,Math.max(b*2,.002));f.material.color.set(defaultBezel?0x111111:0x777777)
+  m.geometry.dispose();m.geometry=new THREE.PlaneGeometry(Math.max(w-b*2,.001),Math.max(h-b*2,.001))
+  refreshUI()
+}
+function saveLayout(){
+  localStorage.setItem("ar-display-layout",JSON.stringify({version:2,displays:displays.map(d=>({
+    number:d.number,wMm:d.wMm,hMm:d.hMm,bezel:d.bezel,
+    position:d.object.position.toArray(),rotation:d.object.rotation.toArray()
+  }))}))
+  $("status").textContent="Saved locally"
+}
+function loadLayout(){
+  const raw=localStorage.getItem("ar-display-layout");if(!raw)return showMessage("No saved layout found.")
   try{
-    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"}},audio:false});
-    camera.srcObject=stream;camera.style.display="block";$("sceneHint").textContent="ã¿ããã§éç½® / ãã©ãã°ã§ç§»å";
-    $("status").textContent="ã«ã¡ã©èµ·åä¸­";
-    arMode=true;
-  }catch(e){$("status").textContent="ã«ã¡ã©ãèµ·åã§ãã¾ãããHTTPSã§éãã¦ãã ãã";alert("ã«ã¡ã©è¨±å¯ãå¿è¦ã§ããGitHub Pagesç­ã®HTTPSç°å¢ã§éãã¦ãã ããã")}
-};
-document.body.addEventListener("click",e=>{
-  if(arMode && e.target===document.body) createDisplay(e.clientX,e.clientY);
-});
-render();
+    const data=JSON.parse(raw);displays.forEach(d=>scene.remove(d.object));displays=[];selected=null
+    for(const d of data.displays||[])makeDisplay(d.wMm,d.hMm,new THREE.Vector3(...d.position),d.rotation?.[1]||0,d.rotation?.[2]||0,!!d.bezel,d.number)
+    renumber();refreshUI();$("status").textContent="Loaded locally"
+  }catch(e){showMessage("Saved data could not be loaded.")}
+}
+function project(world){
+  const v=world.clone().project(camera);if(v.z<-1||v.z>1)return null
+  return {x:(v.x*.5+.5)*innerWidth,y:(-v.y*.5+.5)*innerHeight}
+}
+async function screenshot(){
+  if(!xrReady||!XR8.canvasScreenshot)return showMessage("AR is not running.")
+  try{
+    const data=await XR8.canvasScreenshot().takeScreenshot()
+    const blob=await(await fetch("data:image/jpeg;base64,"+data)).blob()
+    const file=new File([blob],`ar-display-${Date.now()}.jpg`,{type:"image/jpeg"})
+    if(navigator.share&&navigator.canShare?.({files:[file]})){await navigator.share({files:[file],title:"AR Display Screenshot"});$("status").textContent="Screenshot shared"}
+    else{const u=URL.createObjectURL(blob),a=document.createElement("a");a.href=u;a.download=file.name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),1000);$("status").textContent="Screenshot saved"}
+  }catch(e){console.error(e);showMessage("Screenshot failed. Try again when tracking is ready.")}
+}
+function ndc(e){return new THREE.Vector2(e.clientX/innerWidth*2-1,-e.clientY/innerHeight*2+1)}
+function pick(e){
+  raycaster.setFromCamera(ndc(e),camera)
+  const hits=raycaster.intersectObjects(displays.flatMap(d=>d.object.children),false)
+  if(!hits.length)return null
+  return displays.find(d=>d.object===hits[0].object.parent)||null
+}
+let drag=null
+function down(e){
+  if(e.target.closest("#panel,button,select,input"))return
+  const d=pick(e);if(!d)return
+  selected=d;refreshUI()
+  const distance=camera.position.distanceTo(d.object.position)
+  drag={pointerId:e.pointerId,distance}
+  e.currentTarget.setPointerCapture?.(e.pointerId)
+}
+function move(e){
+  if(!drag||drag.pointerId!==e.pointerId||!selected)return
+  raycaster.setFromCamera(ndc(e),camera)
+  const p=new THREE.Vector3();raycaster.ray.at(drag.distance,p);selected.object.position.copy(p)
+  if(selected) $("heightInfo").textContent=`Height above floor: ${Math.round((selected.object.position.y-selected.hMm/2000)*1000)} mm`
+}
+function up(e){if(drag?.pointerId===e.pointerId)drag=null}
+function showMessage(t){$("message").textContent=t;$("message").style.display="block";setTimeout(()=>$("message").style.display="none",2200)}
+
+function sceneModule(){
+  return {name:"display-simulator-scene",
+    onStart:({canvas})=>{
+      const xr=XR8.Threejs.xrScene();scene=xr.scene;camera=xr.camera;renderer=xr.renderer;raycaster=new THREE.Raycaster()
+      XR8.XrController.updateCameraProjectionMatrix({origin:camera.position,facing:camera.quaternion})
+      canvas.addEventListener("pointerdown",down,true);canvas.addEventListener("pointermove",move,true);canvas.addEventListener("pointerup",up,true);canvas.addEventListener("pointercancel",up,true)
+    },
+    onUpdate:({processCpuResult})=>{
+      const r=processCpuResult?.reality;if(!r)return
+      lastReality=r;$("tracking").textContent=`Tracking: ${r.trackingStatus||"—"}`
+      if(r.trackingStatus==="NORMAL")$("status").textContent="AR tracking"
+      if(selected)$("heightInfo").textContent=`Height above floor: ${Math.round((selected.object.position.y-selected.hMm/2000)*1000)} mm`
+    }
+  }
+}
+function startXR(){
+  if(!window.XR8)return showMessage("AR engine is still loading. Try again in a moment.")
+  if(xrRunning)return
+  try{
+    XR8.XrController.configure({disableWorldTracking:false,scale:"absolute"})
+    XR8.addCameraPipelineModules([XR8.GlTextureRenderer.pipelineModule(),XR8.Threejs.pipelineModule(),XR8.XrController.pipelineModule(),XR8.canvasScreenshot().cameraPipelineModule(),sceneModule()])
+    XR8.run({canvas:$("camerafeed"),allowedDevices:XR8.XrConfig.device().MOBILE,cameraConfig:{direction:XR8.XrConfig.camera().BACK},glContextConfig:{alpha:false,preserveDrawingBuffer:true}})
+    xrRunning=true;xrReady=true;$("status").textContent="Starting AR...";$("hint").textContent="Move slowly until Tracking: NORMAL, then tap ADD DISPLAY."
+  }catch(e){console.error(e);showMessage("AR startup failed: "+(e.message||e))}
+}
+$("add").onclick=placeDisplay
+$("delete").onclick=deleteSelected
+$("save").onclick=saveLayout
+$("load").onclick=loadLayout
+$("screenshot").onclick=screenshot
+$("recenter").onclick=()=>window.XR8?.XrController?.recenter()
+$("sizeToggle").onclick=()=>{showSize=!showSize;$("sizeToggle").textContent=`SIZE: ${showSize?"ON":"OFF"}`}
+$("bezelToggle").onclick=()=>{defaultBezel=!defaultBezel;$("bezelToggle").textContent=`BEZEL: ${defaultBezel?"5 mm":"NONE"}`;updateSelected()}
+syncControls()
+window.addEventListener("xrloaded",startXR)
+setTimeout(()=>{if(window.XR8)startXR()},1500)
