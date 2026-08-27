@@ -1,51 +1,61 @@
 <!doctype html>
-<html lang="ja">
+<html lang="en">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
   <meta name="theme-color" content="#111">
   <title>AR Display Simulator</title>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.183.2/build/three.min.js"></script>
+  <!-- This product includes the XR Engine software developed by Niantic Spatial, Inc.
+       Copyright © 2026 Niantic Spatial, Inc. All rights reserved.
+       License: https://github.com/8thwall/engine/blob/main/LICENSE -->
+  <script src="https://cdn.jsdelivr.net/npm/@8thwall/engine-binary@1/dist/xr.js"
+          async crossorigin="anonymous" data-preload-chunks="slam"></script>
   <link rel="stylesheet" href="./src/style.css">
 </head>
 <body>
-  <main id="app">
-    <header>
-      <strong>AR Display Simulator</strong>
-      <span id="status">カメラ未起動</span>
-    </header>
+  <canvas id="camerafeed"></canvas>
+  <div id="topbar"><strong>AR Display Simulator</strong><span id="status">Ready</span></div>
+  <div id="hint">Move slowly until AR tracking is ready.</div>
 
-    <section id="controls">
-      <div class="row">
-        <button id="start">AR開始</button>
-        <button id="add">＋ ディスプレイ</button>
-        <button id="shot">スクショ</button>
-        <button id="save">配置保存</button>
-        <button id="load">配置読込</button>
-      </div>
-      <div class="row">
-        <label>比率
-          <select id="ratio">
-            <option value="16:9">16:9</option>
-            <option value="3:4">3:4</option>
-            <option value="3:2">3:2</option>
-            <option value="custom">自由</option>
-          </select>
-        </label>
-        <label>幅 mm <input id="width" type="number" value="1200" min="50" step="10"></label>
-        <label id="heightWrap">高さ mm <input id="height" type="number" value="675" min="50" step="10"></label>
-        <button id="sizeToggle">サイズ表示 ON</button>
-        <button id="bezelToggle">ベゼル 5mm</button>
-      </div>
-      <div class="row small">
-        <span id="selected">選択なし</span>
-        <span id="floorHeight">床高さ: —</span>
-      </div>
-    </section>
-
-    <video id="camera" autoplay playsinline muted></video>
-    <canvas id="canvas"></canvas>
-    <div id="sceneHint">AR開始後、画面をタップしてディスプレイを配置</div>
-  </main>
-  <script type="module" src="./src/app.js"></script>
+  <section id="panel">
+    <div class="row">
+      <button id="add">+ ADD DISPLAY</button>
+      <button id="delete" disabled>DELETE SELECTED</button>
+      <button id="screenshot">SCREENSHOT</button>
+      <button id="save">SAVE</button>
+      <button id="load">LOAD</button>
+      <button id="recenter">RECENTER</button>
+    </div>
+    <div class="row">
+      <label>UNIT
+        <select id="unit"><option value="mm">mm</option><option value="inch">inch</option></select>
+      </label>
+      <label id="mmWidthWrap">WIDTH <input id="mmWidth" type="number" min="10" step="1" value="1200"></label>
+      <label id="inchSizeWrap" hidden>DISPLAY SIZE
+        <select id="inchSize">
+          <option value="21.5">21.5"</option><option value="23">23"</option>
+          <option value="24">24"</option><option value="27" selected>27"</option>
+          <option value="32">32"</option><option value="43">43"</option>
+          <option value="55">55"</option><option value="65">65"</option>
+          <option value="75">75"</option><option value="custom">Custom</option>
+        </select>
+      </label>
+      <label id="customInchWrap" hidden>DIAGONAL <input id="customInch" type="number" min="1" step="0.1" value="27"></label>
+      <label>RATIO
+        <select id="ratio"><option value="16:9">16:9</option><option value="3:4">3:4</option><option value="3:2">3:2</option><option value="custom">Custom</option></select>
+      </label>
+      <label id="mmHeightWrap">HEIGHT <input id="mmHeight" type="number" min="10" step="1" value="675"></label>
+      <button id="sizeToggle">SIZE: ON</button>
+      <button id="bezelToggle">BEZEL: 5 mm</button>
+    </div>
+    <div class="row info">
+      <span id="selected">Selected: none</span>
+      <span id="heightInfo">Height above floor: —</span>
+      <span id="tracking">Tracking: —</span>
+    </div>
+  </section>
+  <div id="message"></div>
+  <script src="./src/app.js"></script>
 </body>
 </html>
